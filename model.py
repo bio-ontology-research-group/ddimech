@@ -13,7 +13,6 @@ import sys
 from sklearn.metrics import roc_curve, auc
 from tensorflow.keras.callbacks import TensorBoard
 from sklearn.metrics import confusion_matrix
-import scikitplot as skplt
 from sklearn.metrics import precision_recall_curve
 import matplotlib.pyplot as plt
 from sklearn.utils.fixes import signature
@@ -67,7 +66,7 @@ def AUPR_multiclass(Y_test, y_score, n_classes):
     for f_score in f_scores:
         x = np.linspace(0.01, 1)
         y = f_score * x / (2 * x - f_score)
-        l, = plt.plot(x[y >= 0], y[y >= 0], color='gray', alpha=0.2)
+        l = plt.plot(x[y >= 0], y[y >= 0], color='gray', alpha=0.2)
         plt.annotate('f1={0:0.1f}'.format(f_score), xy=(0.9, y[45] + 0.02))
             
     lines.append(l)
@@ -309,8 +308,6 @@ def data():
     
 def create_model(X_train, y_train, X_val, y_val):
     
-    
-    
     model = Sequential()
     model.add(Dense(512, input_shape=(200,)))
     model.add(Activation('relu'))
@@ -366,12 +363,14 @@ def main():
     X_train, X_val, X_test, y_train, y_val, y_test = data()
     print("Evalutation of best performing model:")
     print(best_model.evaluate(X_test, y_test))
-    
-    roc_multiclasses(X_test, y_test,target_names)
-    
-    print(classification_report(X_test,y_test,target_names))
 
-    AUPR_multiclass(X_test, y_test,target_names)
+    preds = best_model.predict(X_test)
+    predictions = (preds >= 0.5).astype('int32')
+    roc_multiclasses(preds, y_test, target_names)
+    
+    print(classification_report(predictions, y_test, target_names))
+
+    AUPR_multiclass(preds, y_test, target_names)
     
     print("Best performing model chosen hyper-parameters:")
     print(best_run)
