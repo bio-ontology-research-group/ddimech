@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 from random import shuffle
@@ -45,8 +46,126 @@ import matplotlib.pyplot as plt
 from itertools import cycle
 from sklearn.metrics import roc_curve, auc
 from sklearn.preprocessing import label_binarize
+import click as ck
 
-	
+
+@ck.command()
+def main():
+    
+    target_names = [
+            'sideEffect', 'proteinBinding', 'multiPathway', 'MoA', 'biologicalProcess', 'indication', 
+            'pkInhibtor', 'pkInducer', 'transporterInhibtor', 'transporterInducer', 'SNPs']
+
+    functions = [load_data, oversample]
+    best_run, best_model = optim.minimize(
+        model=create_model,
+        data=data,
+        functions=functions,
+        algo=tpe.suggest,
+        max_evals=1,
+        trials=Trials())
+    
+    print("Evalutation of best performing model:")
+
+    X_test, y_test = load_data('data/dataset-DDI-MOA-testing.lst')
+    print(best_model.evaluate(X_test, y_test))
+
+    print("Best performing model chosen hyper-parameters:")
+    print(best_run)
+    best_model.save('data/model.h5')
+
+    # preds = best_model.predict(X_test)
+    # predictions = (preds >= 0.5).astype('int32')
+    # roc_multiclasses(preds, y_test, target_names)
+    
+    # print(classification_report(predictions, y_test, target_names))
+
+    # AUPR_multiclass(preds, y_test, target_names)
+    
+
+def create_model(X_train, y_train, X_valid, y_valid):
+    
+    model = Sequential()
+    model.add(Dense({{choice([256, 512, 1024])}}, input_shape=(200,)))
+    model.add(Activation('relu'))
+    model.add(Dense({{choice([256, 512, 1024])}}))
+    model.add(Activation({{choice(['relu', 'sigmoid'])}}))
+    model.add(Dense({{choice([256, 512, 1024])}}))
+    model.add(Activation('relu'))
+    model.add(Dense(1, activation='sigmoid'))
+        
+    #reduce_lr = callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.2,
+    #    patience=5, min_lr=0.001)
+    
+    model.compile(optimizer={{choice(['rmsprop', 'adam', 'sgd'])}},
+        loss='binary_crossentropy',
+        metrics=['accuracy'])
+    
+    model.fit(
+        X_train,
+        y_train,
+        epochs=10,
+        batch_size=128,
+        validation_data=(X_valid, y_valid),
+        #callbacks=[reduce_lr]
+        verbose=1)
+    loss, acc = model.evaluate(X_valid, y_valid, verbose=0)
+    print('Validation accuracy:', acc)
+    return {'loss': loss, 'status': STATUS_OK, 'model': model}
+
+def oversample(df):
+    class_col = 202 # DDI
+    # Oversampling
+    pos_df = df[df[class_col] == 1]
+    neg_df = df[df[class_col] == 0]
+    n_pos = len(pos_df)
+    n_neg = len(neg_df)
+    print('Oversampling')
+    print('Number of positivies', n_pos)
+    print('Number of negatives', n_neg)
+    if n_pos < n_neg:
+        r = n_neg // n_pos
+        if n_neg % n_pos > 0:
+            r += 1
+        pos_df = pos_df.iloc[np.repeat(np.arange(n_pos), r)]
+        index = np.arange(r * n_pos)
+        np.random.shuffle(index)
+        pos_df = pos_df.iloc[index]
+        pos_df = pos_df.iloc[:n_neg]
+    else:
+        r = n_pos // n_neg
+        if n_pos % n_neg > 0:
+            r += 1
+        neg_df = neg_df.iloc[np.repeat(np.arange(n_neg), r)]
+        index = np.arange(r * n_neg)
+        np.random.shuffle(index)
+        neg_df = neg_df.iloc[index]
+        neg_df = neg_df.iloc[:n_pos]
+    df = pd.concat([pos_df, neg_df])
+    return df
+
+def load_data(filename, is_oversample=True):
+    df = pd.read_csv(filename, sep='\t', header=None)
+    if is_oversample:
+        df = oversample(df)
+    # Shuffle
+    index = np.arange(len(df))
+    np.random.shuffle(index)
+    df = df.iloc[index]
+    id_df = df[df.columns[0:2]]
+    features_df = df[df.columns[2:202]]
+    ddi_df = df[df.columns[202]]
+    mech_df = df[df.columns[203:215]]
+    X = features_df.values
+    Y = ddi_df.values
+    return X, Y    
+
+def data():
+    X_train, y_train = load_data('data/dataset-DDI-MOA-training.lst')
+    X_valid, y_valid = load_data('data/dataset-DDI-MOA-validation.lst')
+    return X_train, y_train, X_valid, y_valid
+
+
 def AUPR_multiclass(Y_test, y_score, n_classes):
     precision = dict()
     recall = dict()
@@ -189,192 +308,8 @@ def roc_multiclasses(y_test, y_score,n_classes):
     plt.title('Some extension of Receiver operating characteristic to multi-class')
     plt.legend(loc="lower right")
     plt.show()
-    
-    
-    
-def data():
         
-    train_data = pd.read_csv('data/dataset-DDI-MOA-training.lst',sep='\t', header=None)
-    array = train_data.values
-    train_positives = array[np.where(array[:,203] == 1)]
-    train_negatives = array[np.where(array[:,203] == 0)]
-    new_train_positives = np.delete(train_positives, 202, axis=1)
-    new_train_positives = np.delete(new_train_positives, 202, axis=1)
-    new_train_positives = np.delete(new_train_positives, 0, axis=1)
-    new_train_positives = np.delete(new_train_positives, 0, axis=1)
     
-    pos_sideEffect = new_train_positives[np.where(new_train_positives[:,200] == 1)]    
-    pos_proteinBinding = new_train_positives[np.where(new_train_positives[:,201] == 1)]
-    pos_multiPathway = new_train_positives[np.where(new_train_positives[:,202] == 1)]
-    pos_MoA = new_train_positives[np.where(new_train_positives[:,203] == 1)]
-    pos_biologicalProcess = new_train_positives[np.where(new_train_positives[:,204] == 1)]
-    pos_indication = new_train_positives[np.where(new_train_positives[:,205] == 1)]
-    pos_pkInhibtor = new_train_positives[np.where(new_train_positives[:,205] == 1)]
-    pos_pkInducer = new_train_positives[np.where(new_train_positives[:,207] == 1)]
-    pos_transporterInhibtor = new_train_positives[np.where(new_train_positives[:,208] == 1)]
-    pos_transporterInducer = new_train_positives[np.where(new_train_positives[:,209] == 1)]
-    pos_SNPs = new_train_positives[np.where(new_train_positives[:,210] == 1)]
-    
-    proteinBinding = np.repeat(np.array(list(pos_proteinBinding)), len(pos_sideEffect)//len(pos_proteinBinding), axis = 0)
-    multiPathway = np.repeat(np.array(list(pos_multiPathway)), len(pos_sideEffect)//len(pos_multiPathway), axis = 0)
-    MoA = np.repeat(np.array(list(pos_MoA)), len(pos_sideEffect)//len(pos_MoA), axis = 0)
-    biologicalProcess = np.repeat(np.array(list(pos_biologicalProcess)), len(pos_sideEffect)//len(pos_biologicalProcess), axis = 0)
-    indication = np.repeat(np.array(list(pos_indication)), len(pos_sideEffect)//len(pos_indication), axis = 0)
-    pkInhibtor = np.repeat(np.array(list(pos_pkInhibtor)), len(pos_sideEffect)//len(pos_pkInhibtor), axis = 0)
-    pkInducer = np.repeat(np.array(list(pos_pkInducer)), len(pos_sideEffect)//len(pos_pkInducer), axis = 0)
-    transporterInhibtor = np.repeat(np.array(list(pos_transporterInhibtor)), len(pos_sideEffect)//len(pos_transporterInhibtor), axis = 0)
-    transporterInducer = np.repeat(np.array(list(pos_transporterInducer)), len(pos_sideEffect)//len(pos_transporterInducer), axis = 0)
-    SNPs = np.repeat(np.array(list(pos_SNPs)), len(pos_sideEffect)//len(pos_SNPs), axis = 0)
-    x_train = np.concatenate((proteinBinding,multiPathway,MoA,biologicalProcess,indication,pkInhibtor,pkInducer,
-                              transporterInhibtor,transporterInducer,SNPs,pos_sideEffect), axis=0)
-    np.random.shuffle(x_train)
-
-    new_train_negatives = np.delete(train_negatives, 202, axis=1)
-    new_train_negatives = np.delete(new_train_negatives, 202, axis=1)
-    new_train_negatives = np.delete(new_train_negatives, 0, axis=1)
-    new_train_negatives = np.delete(new_train_negatives, 0, axis=1)
-    train_negatives = np.repeat(np.array(list(new_train_negatives)), len(x_train)//len(new_train_negatives), axis = 0)
-    x_trainS = np.concatenate((train_negatives, x_train), axis=0)
-    np.random.shuffle(x_trainS)
-    
-    val_data = pd.read_csv('data/dataset-DDI-MOA-validation.lst',sep='\t', header=None)
-    arrayval = val_data.values
-    val_positives = array[np.where(arrayval[:,203] == 1)]
-    val_negatives = array[np.where(arrayval[:,203] == 0)]
-    new_val_positives = np.delete(val_positives, 202, axis=1)
-    new_val_positives = np.delete(new_val_positives, 202, axis=1)
-    new_val_positives = np.delete(new_val_positives, 0, axis=1)
-    new_val_positives = np.delete(new_val_positive	s, 0, axis=1)
-    
-    pos_sideEffect_val = new_val_positives[np.where(new_val_positives[:,200] == 1)]    
-    pos_proteinBinding_val = new_val_positives[np.where(new_val_positives[:,201] == 1)]
-    pos_multiPathway_val = new_val_positives[np.where(new_val_positives[:,202] == 1)]
-    pos_MoA_val = new_val_positives[np.where(new_val_positives[:,203] == 1)]
-    pos_biologicalProcess_val = new_val_positives[np.where(new_val_positives[:,204] == 1)]
-    pos_indication_val = new_val_positives[np.where(new_val_positives[:,205] == 1)]
-    pos_pkInhibtor_val = new_val_positives[np.where(new_val_positives[:,205] == 1)]
-    pos_pkInducer_val = new_val_positives[np.where(new_val_positives[:,207] == 1)]
-    pos_transporterInhibtor_val = new_val_positives[np.where(new_val_positives[:,208] == 1)]
-    pos_transporterInducer_val = new_val_positives[np.where(new_val_positives[:,209] == 1)]
-    pos_SNPs_val = new_val_positives[np.where(new_val_positives[:,210] == 1)]
-    
-    proteinBinding_val = np.repeat(np.array(list(pos_proteinBinding_val)), len(pos_sideEffect_val)//len(pos_proteinBinding_val), axis = 0)
-    multiPathway_val = np.repeat(np.array(list(pos_multiPathway_val)), len(pos_sideEffect_val)//len(pos_multiPathway_val), axis = 0)
-    MoA_val = np.repeat(np.array(list(pos_MoA_val)), len(pos_sideEffect_val)//len(pos_MoA_val), axis = 0)
-    biologicalProcess_val = np.repeat(np.array(list(pos_biologicalProcess_val)), len(pos_sideEffect_val)//len(pos_biologicalProcess_val), axis = 0)
-    indication_val = np.repeat(np.array(list(pos_indication_val)), len(pos_sideEffect_val)//len(pos_indication_val), axis = 0)
-    pkInhibtor_val = np.repeat(np.array(list(pos_pkInhibtor_val)), len(pos_sideEffect_val)//len(pos_pkInhibtor_val), axis = 0)
-    pkInducer_val = np.repeat(np.array(list(pos_pkInducer_val)), len(pos_sideEffect_val)//len(pos_pkInducer_val), axis = 0)
-    transporterInhibtor_val = np.repeat(np.array(list(pos_transporterInhibtor_val)), len(pos_sideEffect_val)//len(pos_transporterInhibtor_val), axis = 0)
-    transporterInducer_val = np.repeat(np.array(list(pos_transporterInducer_val)), len(pos_sideEffect_val)//len(pos_transporterInducer_val), axis = 0)
-    SNPs_val = np.repeat(np.array(list(pos_SNPs_val)), len(pos_sideEffect_val)//len(pos_SNPs_val), axis = 0)
-    x_val = np.concatenate((proteinBinding_val,multiPathway_val,MoA_val,biologicalProcess_val,indication_val,pkInhibtor_val,pkInducer_val,
-                            transporterInhibtor_val,transporterInducer_val,SNPs_val,pos_sideEffect_val), axis=0)
-    np.random.shuffle(x_val)
-
-    new_val_negatives = np.delete(val_negatives, 202, axis=1)
-    new_val_negatives = np.delete(new_val_negatives, 202, axis=1)
-    new_val_negatives = np.delete(new_val_negatives, 0, axis=1)
-    new_val_negatives = np.delete(new_val_negatives, 0, axis=1)
-    val_negatives = np.repeat(np.array(list(new_val_negatives)), len(x_val)//len(new_val_negatives), axis = 0)
-    x_valS = np.concatenate((val_negatives, x_val), axis=0)
-    np.random.shuffle(x_valS)
-    
-    test_data = pd.read_csv('data/dataset-DDI-MOA-testing.lst',sep='\t', header=None)
-    arraytest = test_data.values
-    test_positives = arraytest[np.where(arraytest[:,203] == 1)]
-    test_negatives = arraytest[np.where(arraytest[:,203] == 0)]
-    new_test_positives = np.delete(test_positives, 202, axis=1)
-    new_test_positives = np.delete(new_test_positives, 202, axis=1)
-    new_test_positives = np.delete(new_test_positives, 0, axis=1)
-    new_test_positives = np.delete(new_test_positives, 0, axis=1)
-    new_test_negatives = np.delete(test_negatives, 202, axis=1)
-    new_test_negatives = np.delete(new_test_negatives, 202, axis=1)
-    new_test_negatives = np.delete(new_test_negatives, 0, axis=1)
-    new_test_negatives = np.delete(new_test_negatives, 0, axis=1)
-    
-    x_test = np.concatenate((new_test_positives, new_test_negatives), axis=0)
-    
-    X_train = x_trainS[:,:200]
-    X_val = x_valS[:,:200]
-    X_test = x_test[:,:200]
-    y_train = x_trainS[:,200]
-    y_val = x_valS[:,200]
-    y_test = x_test[:,200]
-    
-    return X_train, X_val, X_test, y_train, y_val, y_test
-    
-    
-    
-def create_model(X_train, y_train, X_val, y_val):
-    
-    model = Sequential()
-    model.add(Dense(512, input_shape=(200,)))
-    model.add(Activation('relu'))
-    model.add(Dropout({{uniform(0, 1)}}))
-    model.add(Dense({{choice([256, 512, 1024])}}))
-    model.add(Activation({{choice(['relu', 'sigmoid'])}}))
-    model.add(Dropout({{uniform(0, 1)}}))
-    
-    if {{choice(['three', 'four'])}} == 'four':
-        model.add(Dense(100))
-        model.add({{choice([Dropout(0.5), Activation('linear')])}})
-        model.add(Activation('relu'))
-        model.add(Dense(11))
-        model.add(Activation('softmax'))
-        
-    #reduce_lr = callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.2,
-    #    patience=5, min_lr=0.001)
-    
-    model.compile(optimizer={{choice(['rmsprop', 'adam', 'sgd'])}},
-        loss='sparse_categorical_crossentropy',
-        metrics=['accuracy'])
-    
-    model.fit(X_train,
-        y_train,
-        epochs=1,
-        #epochs={{choice([25, 50, 75, 100])}},
-        batch_size={{choice([64, 128])}},
-        validation_data=(X_val, y_val),
-        #callbacks=[reduce_lr]
-        verbose =2)
-
-    score, acc = model.evaluate(X_val, y_val, verbose=0)
-    print('Test accuracy:', acc)
-    return {'loss': -acc, 'status': STATUS_OK, 'model': model}
-    
-    
-def main():
-    
-    #print (' Drugs and GeneOntology(GO)')
-    #ComputeAllClacess(210,'/Users/adeebnoor/Documents/CBRC2018/Neural_Network/Drug-GO/RESULT-MM.txt')
-    
-    
-    target_names = [
-            'sideEffect', 'proteinBinding', 'multiPathway', 'MoA', 'biologicalProcess', 'indication', 
-            'pkInhibtor', 'pkInducer', 'transporterInhibtor', 'transporterInducer', 'SNPs']
-    
-    best_run, best_model = optim.minimize(
-            model=create_model,
-            data=data,
-            algo=tpe.suggest,
-            max_evals=1,
-            trials=Trials())
-    X_train, X_val, X_test, y_train, y_val, y_test = data()
-    print("Evalutation of best performing model:")
-    print(best_model.evaluate(X_test, y_test))
-
-    preds = best_model.predict(X_test)
-    predictions = (preds >= 0.5).astype('int32')
-    roc_multiclasses(preds, y_test, target_names)
-    
-    print(classification_report(predictions, y_test, target_names))
-
-    AUPR_multiclass(preds, y_test, target_names)
-    
-    print("Best performing model chosen hyper-parameters:")
-    print(best_run)
-    best_model.save('data/model.h5')
 
 if __name__ == "__main__":
     main()
