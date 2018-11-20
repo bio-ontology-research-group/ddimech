@@ -14,7 +14,7 @@ import sys
 from sklearn.metrics import roc_curve, auc
 from tensorflow.keras.callbacks import TensorBoard
 from sklearn.metrics import confusion_matrix
-from sklearn.metrics import precision_recall_curve
+from sklearn.metrics import precision_recall_curve, average_precision_score
 import matplotlib.pyplot as plt
 from sklearn.utils.fixes import signature
 import pylab as pl
@@ -23,7 +23,7 @@ from keras.models import Sequential, load_model
 from keras.layers import Dense, Dropout, BatchNormalization, Activation
 from keras.utils import multi_gpu_model, Sequence, np_utils
 from keras.optimizers import SGD, Adam, RMSprop, Nadam
-from keras.callbacks import EarlyStopping, TensorBoard
+from keras.callbacks import EarlyStopping, TensorBoard, ModelCheckpoint
 from hyperopt import Trials, STATUS_OK, tpe, rand
 from keras.layers.core import Dense, Dropout, Activation
 from keras.layers.advanced_activations import LeakyReLU
@@ -50,35 +50,44 @@ import click as ck
 
 
 @ck.command()
-def main():
+@ck.option('--is-train', is_flag=True, help='Starts training')
+def main(is_train):
     
     target_names = [
             'sideEffect', 'proteinBinding', 'multiPathway', 'MoA', 'biologicalProcess', 'indication', 
             'pkInhibtor', 'pkInducer', 'transporterInhibtor', 'transporterInducer', 'SNPs']
 
-    functions = [load_data, oversample]
-    best_run, best_model = optim.minimize(
-        model=create_model,
-        data=data,
-        functions=functions,
-        algo=tpe.suggest,
-        max_evals=1,
-        trials=Trials())
-    
-    print("Evalutation of best performing model:")
+    if is_train:
+        # functions = [load_data, oversample]
+        # best_run, best_model = optim.minimize(
+        #     model=create_model,
+        #     data=data,
+        #     functions=functions,
+        #     algo=tpe.suggest,
+        #     max_evals=1,
+        #     trials=Trials())
 
+        print("Evalutation of best performing model:")
+
+
+        X_train, y_train, X_valid, y_valid = data()
+        result = create_model(X_train, y_train, X_valid, y_valid)
+        best_model = result['model']
+    else:
+        best_model = load_model('model.h5')
     X_test, y_test = load_data('data/dataset-DDI-MOA-testing.lst')
-    print(best_model.evaluate(X_test, y_test))
+    loss, acc = best_model.evaluate(X_test, y_test)
+    print('Testing loss', loss)
+    print('Testing accuracy', acc)
+    # print("Best performing model chosen hyper-parameters:")
+    # print(best_run)
+    best_model.save('best_model.h5')
 
-    print("Best performing model chosen hyper-parameters:")
-    print(best_run)
-    best_model.save('data/model.h5')
-
-    # preds = best_model.predict(X_test)
-    # predictions = (preds >= 0.5).astype('int32')
-    # roc_multiclasses(preds, y_test, target_names)
-    
-    # print(classification_report(predictions, y_test, target_names))
+    preds = best_model.predict(X_test)
+    predictions = (preds >= 0.5).astype('int32')
+    compute_roc_auc(y_test, preds)
+    AUPR_multiclass(y_test, preds)
+    print(classification_report(predictions, y_test))
 
     # AUPR_multiclass(preds, y_test, target_names)
     
@@ -86,20 +95,26 @@ def main():
 def create_model(X_train, y_train, X_valid, y_valid):
     
     model = Sequential()
-    model.add(Dense({{choice([256, 512, 1024])}}, input_shape=(200,)))
-    model.add(Activation('relu'))
-    model.add(Dense({{choice([256, 512, 1024])}}))
-    model.add(Activation({{choice(['relu', 'sigmoid'])}}))
-    model.add(Dense({{choice([256, 512, 1024])}}))
-    model.add(Activation('relu'))
+    # model.add(Dense({{choice([256, 512, 1024])}}, input_shape=(212,), activation='relu'))
+    # model.add(Dense({{choice([256, 512, 1024])}}, activation='relu'))
+    # model.add(Dense({{choice([256, 512, 1024])}}, activation='relu'))
+
+    model.add(Dense(256, activation='relu'))
     model.add(Dense(1, activation='sigmoid'))
         
     #reduce_lr = callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.2,
     #    patience=5, min_lr=0.001)
     
-    model.compile(optimizer={{choice(['rmsprop', 'adam', 'sgd'])}},
+    model.compile(
+        optimizer='rmsprop',
         loss='binary_crossentropy',
         metrics=['accuracy'])
+
+    checkpointer = ModelCheckpoint(
+        filepath='model.h5',
+        verbose=1,
+        save_best_only=True)
+    earlystopper = EarlyStopping(monitor='val_loss', patience=5, verbose=1)
     
     model.fit(
         X_train,
@@ -107,8 +122,10 @@ def create_model(X_train, y_train, X_valid, y_valid):
         epochs=10,
         batch_size=128,
         validation_data=(X_valid, y_valid),
-        #callbacks=[reduce_lr]
+        callbacks=[checkpointer, earlystopper],
         verbose=1)
+    
+    model = load_model('model.h5')
     loss, acc = model.evaluate(X_valid, y_valid, verbose=0)
     print('Validation accuracy:', acc)
     return {'loss': loss, 'status': STATUS_OK, 'model': model}
@@ -156,8 +173,8 @@ def load_data(filename, is_oversample=True):
     features_df = df[df.columns[2:202]]
     ddi_df = df[df.columns[202]]
     mech_df = df[df.columns[203:215]]
-    X = features_df.values
-    Y = ddi_df.values
+    X = np.concatenate((features_df.values, mech_df.values), axis=1)
+    Y = ddi_df.values.reshape(-1, 1)
     return X, Y    
 
 def data():
@@ -166,17 +183,28 @@ def data():
     return X_train, y_train, X_valid, y_valid
 
 
-def AUPR_multiclass(Y_test, y_score, n_classes):
+def AUPR_multiclass(Y_test, y_score):
     precision = dict()
     recall = dict()
     average_precision = dict()
+    n_classes = Y_test.shape[1]
     for i in range(n_classes):
-        precision[i], recall[i], _ = precision_recall_curve(Y_test,y_score)
-        average_precision[i] = average_precision_score(Y_test, y_score)
+        precision[i], recall[i], _ = precision_recall_curve(Y_test[:, i], y_score[:, i])
+        average_precision[i] = average_precision_score(Y_test[:, i], y_score[:, i])
+
+    # A "micro-average": quantifying score on all classes jointly
+    precision["micro"], recall["micro"], _ = precision_recall_curve(Y_test.ravel(),
+                                                                    y_score.ravel())
+    average_precision["micro"] = average_precision_score(Y_test, y_score,
+                                                         average="micro")
     
+    print('Average precision score, micro-averaged over all classes: {0:0.2f}'
+          .format(average_precision["micro"]))
+
     # setup plot details
-    colors = cycle(['aqua', 'darkorange', 'cornflowerblue', 'blue', 
-                    'red', 'green', 'navy', 'turquoise', 'darkorange', 'teal', 'pink'])
+    colors = cycle(
+        ['aqua', 'darkorange', 'cornflowerblue', 'blue', 
+         'red', 'green', 'navy', 'turquoise', 'darkorange', 'teal', 'pink'])
     
     plt.figure(figsize=(7, 8))
     f_scores = np.linspace(0.2, 0.8, num=4)
@@ -185,20 +213,20 @@ def AUPR_multiclass(Y_test, y_score, n_classes):
     for f_score in f_scores:
         x = np.linspace(0.01, 1)
         y = f_score * x / (2 * x - f_score)
-        l = plt.plot(x[y >= 0], y[y >= 0], color='gray', alpha=0.2)
+        l, = plt.plot(x[y >= 0], y[y >= 0], color='gray', alpha=0.2)
         plt.annotate('f1={0:0.1f}'.format(f_score), xy=(0.9, y[45] + 0.02))
             
     lines.append(l)
     labels.append('iso-f1 curves')
-    l = plt.plot(recall["micro"], precision["micro"], color='gold', lw=2)
+    l, = plt.plot(recall["micro"], precision["micro"], color='gold', lw=2)
     lines.append(l)
     labels.append('micro-average Precision-recall (area = {0:0.2f})'
                   ''.format(average_precision["micro"]))
     
     for i, color in zip(range(n_classes), colors):
-            l, = plt.plot(recall[i], precision[i], color=color, lw=2)
-            lines.append(l)
-            labels.append('Precision-recall for class {0} (area = {1:0.2f})'
+        l, = plt.plot(recall[i], precision[i], color=color, lw=2)
+        lines.append(l)
+        labels.append('Precision-recall for class {0} (area = {1:0.2f})'
                           ''.format(i, average_precision[i]))
             
     fig = plt.gcf()
@@ -209,6 +237,7 @@ def AUPR_multiclass(Y_test, y_score, n_classes):
     plt.ylabel('Precision')
     plt.title('Extension of Precision-Recall curve to multi-class')
     plt.legend(lines, labels, loc=(0, -.38), prop=dict(size=14))
+    plt.savefig('aupr.pdf')
     plt.show()
 
     # A "micro-average": quantifying score on all classes jointly
@@ -219,7 +248,7 @@ def AUPR_multiclass(Y_test, y_score, n_classes):
     print('Average precision score, micro-averaged over all classes: {0:0.2f}'
           .format(average_precision["micro"]))
     
-def roc_multiclasses(y_test, y_score,n_classes):
+def compute_roc_auc(y_test, y_score):
 
     # Plot linewidth.
     lw = 2
@@ -228,6 +257,7 @@ def roc_multiclasses(y_test, y_score,n_classes):
     fpr = dict()
     tpr = dict()
     roc_auc = dict()
+    n_classes = y_test.shape[1]
     for i in range(n_classes):
             fpr[i], tpr[i], _ = roc_curve(y_test[:, i], y_score[:, i])
             roc_auc[i] = auc(fpr[i], tpr[i])
@@ -278,37 +308,8 @@ def roc_multiclasses(y_test, y_score,n_classes):
     plt.ylabel('True Positive Rate')
     plt.title('Some extension of Receiver operating characteristic to multi-class')
     plt.legend(loc="lower right")
+    plt.savefig('roc_auc.pdf')
     plt.show()
-    
-    
-    # Zoom in view of the upper left corner.
-    plt.figure(2)
-    plt.xlim(0, 0.2)
-    plt.ylim(0.8, 1)
-    plt.plot(fpr["micro"], tpr["micro"],
-             label='micro-average ROC curve (area = {0:0.2f})'
-             ''.format(roc_auc["micro"]),
-             color='deeppink', linestyle=':', linewidth=4)
-    
-    plt.plot(fpr["macro"], tpr["macro"],
-             label='macro-average ROC curve (area = {0:0.2f})'
-             ''.format(roc_auc["macro"]),
-             color='navy', linestyle=':', linewidth=4)
-    
-    colors = cycle(['aqua', 'darkorange', 'cornflowerblue', 'blue', 
-                    'red', 'green', 'navy', 'turquoise', 'darkorange', 'teal', 'pink'])
-    for i, color in zip(range(n_classes), colors):
-            plt.plot(fpr[i], tpr[i], color=color, lw=lw,
-                     label='ROC curve of class {0} (area = {1:0.2f})'
-                     ''.format(i, roc_auc[i]))
-            
-    plt.plot([0, 1], [0, 1], 'k--', lw=lw)
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('Some extension of Receiver operating characteristic to multi-class')
-    plt.legend(loc="lower right")
-    plt.show()
-        
     
 
 if __name__ == "__main__":

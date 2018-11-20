@@ -2,3 +2,5 @@
 *.pyc
 data/
 venv/
+*.h5
+*.pdf
